@@ -87,7 +87,13 @@ class RotaSlotStaffRepository
         $minutesAlone = [];
 
         foreach ($shifts as $dayNumber => $shiftInfo) {
-            dump($dayNumber);
+            uasort($shiftInfo, function ($shiftA, $shiftB) {
+                $shiftAStart = new \DateTime($shiftA['start_time']);
+                $shiftBStart = new \DateTime($shiftB['start_time']);
+
+                return $shiftAStart <=> $shiftBStart;
+            });
+
             $minutesAlone[$dayNumber] = $this->calculateWorkedAlone($shiftInfo);
         }
 
@@ -132,49 +138,43 @@ class RotaSlotStaffRepository
     protected function calculateWorkedAlone(array $dayShifts)
     {
         $minutesAlone = 0;
+        $shiftsAlone = [];
 
         foreach ($dayShifts as $staffId => $shift) {
             $shiftRange = $this->getRange($shift['start_time'], $shift['end_time']);
-            $shiftsAlone = [$shiftRange];
+            $shiftRanges = [$shiftRange];
 
-            $shiftsAlone = $this->compareDayShifts($shift, $shiftsAlone, $dayShifts);
+            $shifts = $this->compareDayShifts($shift, $shiftRanges, $dayShifts);
 
-            if ($shiftsAlone === []) {
+            if ($shifts === []) {
                 continue;
             }
 
-            dump($shiftsAlone);
-            $minutesAlone += $this->calculateMinutesAlone($shiftsAlone);
-            dump($minutesAlone);
+            $shiftsAlone = array_merge($shiftsAlone, $shifts);
         }
+
+        $shiftsAlone = array_values(array_filter($shiftsAlone, function ($shiftAlone, $index) use ($shiftsAlone) {
+            for ($i = 0; $i < count($shiftsAlone); $i++) {
+                if ($shiftAlone[0]->getTimestamp() === $shiftsAlone[$i][0]->getTimestamp() &&
+                    $shiftAlone[1]->getTimestamp() === $shiftsAlone[$i][1]->getTimestamp() &&
+                    $i != $index
+                ) {
+                    return false;
+                }
+            }
+
+            return true;
+        }, ARRAY_FILTER_USE_BOTH));
+
+        $minutesAlone += $this->calculateMinutesAlone($shiftsAlone);
 
         return $minutesAlone;
     }
 
     /**
-     * Get a combination of DateTime object representing start and end times
-     *
-     * @param  string $startTime
-     * @param  string $endTime
-     *
-     * @return array
-     */
-    protected function getRange($startTime, $endTime)
-    {
-        $start = new \DateTime($startTime);
-        $end = new \DateTime($endTime);
-
-        if ($start > $end) {
-            $end->modify('+1 day');
-        }
-
-        return [$start, $end];
-    }
-
-    /**
      * Compare shifts for a day
      *
-     * @param  array $shift
+     * @param  \DateTime[] $shift
      * @param  array $shiftsAlone
      * @param  array $shifts
      *
@@ -182,6 +182,8 @@ class RotaSlotStaffRepository
      */
     protected function compareDayShifts(array $shift, array $shiftsAlone, array $shifts)
     {
+        $uniquePeriods = [];
+
         foreach ($shifts as $shiftInfo) {
             if ($shift === $shiftInfo) {
                 continue;
@@ -190,22 +192,22 @@ class RotaSlotStaffRepository
             $shiftRange = $this->getRange($shiftInfo['start_time'], $shiftInfo['end_time']);
 
             foreach ($shiftsAlone as $shiftAlone) {
-                $shiftsAlone = $this->getUniquePeriods($shiftAlone, $shiftRange);
+                $uniquePeriods = array_merge($uniquePeriods, $this->getUniquePeriods($shiftAlone, $shiftRange));
             }
 
-            if ($shiftsAlone === []) {
+            if ($uniquePeriods === []) {
                 return [];
             }
         }
 
-        return $shiftsAlone;
+        return $uniquePeriods;
     }
 
     /**
-     * Retrieve unique periods for first period compared to the second period
+     * Retrieve unique periods between provided periods
      *
-     * @param  array  $periodA
-     * @param  array  $periodB
+     * @param  \DateTime[]  $periodA
+     * @param  \DateTime[]  $periodB
      *
      * @return array
      */
@@ -216,12 +218,17 @@ class RotaSlotStaffRepository
 
         // check if there is no overlap between ranges
         if ($startA > $endB || $endA < $startB) {
-            return [$periodA];
+            return [$periodA, $periodB];
         }
 
-        // check if is the periodA is inside periodB or the same
-        if (($startB < $startA && $endB > $endA) || ($startA == $startB && $endA == $endB)) {
+        // check if periods are the same
+        if ($startA == $startB && $endA == $endB) {
             return [];
+        }
+
+        // check if is the periodA is inside periodB
+        if ($startB < $startA && $endB > $endA) {
+            return [[$startB, $startA], [$endA, $endB]];
         }
 
         // check if periodB is inside periodA
@@ -230,18 +237,22 @@ class RotaSlotStaffRepository
         }
 
         // check if periodA starts before periodB
-        if ($startB <= $startA) {
-            return [[$endB, $endA]];
+        if ($startB < $startA) {
+            return [[$startB, $startA]];
         }
 
         // periodA ends after periodB
-        return [[$startA, $startB]];
+        if ($endB < $endA) {
+            return [[$endA, $endB]];
+        }
+
+        return [];
     }
 
     /**
      * Calculate number of minutes alone
      *
-     * @param  array $shiftsAlone
+     * @param  \DateTime[] $shiftsAlone
      *
      * @return int
      */
@@ -257,5 +268,25 @@ class RotaSlotStaffRepository
         }
 
         return $minutesAlone;
+    }
+
+    /**
+     * Get a combination of DateTime objects representing start and end times
+     *
+     * @param  string $startTime
+     * @param  string $endTime
+     *
+     * @return \DateTime[]
+     */
+    protected function getRange($startTime, $endTime)
+    {
+        $start = new \DateTime($startTime);
+        $end = new \DateTime($endTime);
+
+        if ($start > $end) {
+            $end->modify('+1 day');
+        }
+
+        return [$start, $end];
     }
 }
